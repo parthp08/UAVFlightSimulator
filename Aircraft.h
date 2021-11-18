@@ -141,14 +141,19 @@ public:
 	double get_altitude() const;
 	std::vector<double> get_states() const;
 	std::vector<double> get_controls() const;
-	std::vector<double> trim(const double& velocity, const double& flight_path_angle, const double& altitude, const double& orbit_radius);
-	std::vector<double> calculate_derivatives(const std::vector<double>& input_states, const std::vector<double>& control_inputs);
+	void trim(const double& velocity, const double& flight_path_angle, const double& altitude, const double& orbit_radius);
+	std::vector<double> calculate_derivatives(const std::vector<double>& input_states, const std::vector<double>& control_inputs, bool linearization_flag = false);
 	std::vector<double> quat2euler(const double& e0, const double& e1, const double& e2, const double& e3);
+	void linearize(const double& velocity, const double& flight_path_angle, const double& altitude, const double& orbit_radius);
+	void linearize(const std::vector<double>& trimmed_states, const std::vector<double>& trimmed_inputs);
 
 private:
 	void altitude_check();
 	void quat2euler();
 	void norm_quaternion();
-	void euler2quat(double yaw, double pitch, double roll);
+	std::vector<double> euler2quat(double yaw, double pitch, double roll);
+	std::vector<double> to_newstates(const std::vector<double>& old_states);
+	std::vector<double> from_newstates(const std::vector<double>& new_states);
+	std::vector<double> calculate_new_derivatives(const std::vector<double>& old_states, const std::vector<double>& controls_inputs);
 };
 

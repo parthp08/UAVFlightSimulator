@@ -11,4 +11,4 @@ std::vector<double> operator*(const std::vector<double>& lhs, const double& n);
 std::vector<double> operator/(const std::vector<double>& lhs, const double& n);
 std::vector<double> abs(const std::vector<double>& v);
 double max(const std::vector<double>& v);
-double sign(double& a);
+double sign(const double& a);

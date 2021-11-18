@@ -75,7 +75,7 @@ double max(const std::vector<double> &v)
 	return *std::max_element(std::begin(v), std::end(v));
 }
 
-double sign(double &a)
+double sign(const double &a)
 {
 	if (a >= 0.0)
 	{

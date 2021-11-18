@@ -28,7 +28,7 @@ void Aircraft::atmosphere_properties() {
 	}
 }
 
-std::vector<double> Aircraft::calculate_derivatives(const std::vector<double>& input_states, const std::vector<double>& control_inputs) {
+std::vector<double> Aircraft::calculate_derivatives(const std::vector<double>& input_states, const std::vector<double>& control_inputs, bool linearization_flag) {
 
 	double u = input_states[0], v = input_states[1], w = input_states[2];
 	double p = input_states[3], q = input_states[4], r = input_states[5];
@@ -39,9 +39,19 @@ std::vector<double> Aircraft::calculate_derivatives(const std::vector<double>& i
 	double d_ail = control_inputs[2];
 	double d_rud = control_inputs[3];
 
-	double Va = sqrt(u * u + v * v + w * w);
-	double alpha = atan2(w, u);
-	double beta = asin(v / Va);
+	double Va, alpha, beta;
+
+	if (linearization_flag) {
+		Va = input_states[0], alpha = input_states[1], beta = input_states[2];
+	}
+	else {
+		Va = sqrt(u * u + v * v + w * w);
+		alpha = atan2(w, u);
+		beta = asin(v / Va);
+		velocities[0] = Va;
+		velocities[1] = alpha;
+		velocities[2] = beta;
+	}
 
 	// calculate aerodynamics forces and moments
 	double s_alpha = sin(alpha), c_alpha = cos(alpha);
@@ -78,9 +88,16 @@ std::vector<double> Aircraft::calculate_derivatives(const std::vector<double>& i
 	Moments_aero[2] = q_bar * S * b * Cn;
 
 	// gravity forces
-	Forces_grav[0] = mass * g * 2 * (e1 * e3 - e2 * e0);
-	Forces_grav[1] = mass * g * 2 * (e2 * e3 + e1 * e0);
-	Forces_grav[2] = mass * g * (e3 * e3 + e0 * e0 - e1 * e1 - e2 * e2);
+	if (linearization_flag) {
+		Forces_grav[0] = -mass * g * sin(input_states[7]);
+		Forces_grav[1] = mass * g * cos(input_states[7]) * sin(input_states[6]);
+		Forces_grav[2] = mass * g * cos(input_states[7]) * cos(input_states[6]);
+	}
+	else {
+		Forces_grav[0] = mass * g * 2 * (e1 * e3 - e2 * e0);
+		Forces_grav[1] = mass * g * 2 * (e2 * e3 + e1 * e0);
+		Forces_grav[2] = mass * g * (e3 * e3 + e0 * e0 - e1 * e1 - e2 * e2);
+	}
 
 	// propulsion forces
 	double a = C_Q0 * (rho * pow(D_prop, 5)) / pow((2 * PI), 2);
@@ -106,19 +123,42 @@ std::vector<double> Aircraft::calculate_derivatives(const std::vector<double>& i
 
 	// calculate derivatives
 	std::vector<double> d_states{input_states};
-	d_states[0] = r * v - q * w + Forces[0] / mass;
-	d_states[1] = p * w - r * u + Forces[1] / mass;
-	d_states[2] = q * u - p * v + Forces[2] / mass;
 	d_states[3] = gamma11 * p * q - gamma12 * q * r + gamma13 * Moments[0] + gamma14 * Moments[2];
 	d_states[4] = gamma21 * p * r - gamma22 * (p * p - r * r) + Moments[1] / Iyy;
 	d_states[5] = gamma31 * p * q - gamma11 * q * r + gamma14 * Moments[0] + gamma32 * Moments[2];
-	d_states[6] = 0.5 * (-p * e1 - q * e2 - r * e3);
-	d_states[7] = 0.5 * (p * e0 + r * e2 - q * e3);
-	d_states[8] = 0.5 * (q * e0 - r * e1 + p * e3);
-	d_states[9] = 0.5 * (r * e0 + q * e1 - p * e2);
-	d_states[10] = u * (e1 * e1 + e0 * e0 - e2 * e2 - e3 * e3) + 2 * v * (e1 * e2 - e3 * e0) + 2 * w * (e1 * e3 + e2 * e0);
-	d_states[11] = 2 * u * (e1 * e2 + e3 * e0) + v * (e2 * e2 + e0 * e0 - e1 * e1 - e3 * e3) + 2 * w * (e2 * e3 - e1 * e0);
-	d_states[12] = -(-2 * u * (e1 * e3 - e2 * e0) - 2 * v * (e2 * e3 + e1 * e0) - w * (e3 * e3 + e0 * e0 - e1 * e1 - e2 * e2));
+
+	if (linearization_flag) { // (Va, alpha, beta, phi, theta, psi, Xe, Ye, h) dot
+		u = Va * cos(alpha) * cos(beta);
+		v = Va * sin(beta);
+		w = Va * sin(alpha) * cos(beta);
+		double udot = r * v - q * w + Forces[0] / mass;
+		double vdot = p * w - r * u + Forces[1] / mass;
+		double wdot = q * u - p * v + Forces[2] / mass;
+		d_states[0] = (u * udot + v * vdot + w * wdot) / Va;
+		d_states[1] = (u * wdot - w * udot) / (u * u + w * w);
+		d_states[2] = (vdot * Va - v * d_states[0]) / (Va * pow(u * u + w * w, 0.5));
+		double c_phi = cos(input_states[6]), s_phi = sin(input_states[6]);
+		double c_theta = cos(input_states[7]), s_theta = sin(input_states[7]), t_theta = tan(input_states[7]);
+		double c_psi = cos(input_states[8]), s_psi = sin(input_states[8]);
+		d_states[6] = p + q * s_phi * t_theta + r * c_phi * t_theta;
+		d_states[7] = q * c_phi - r * s_phi;
+		d_states[8] = q * s_phi / c_theta + r * c_phi / c_theta;
+		d_states[9] = u * (c_theta * c_psi) + v * (-c_phi * s_psi + s_phi * s_theta * c_psi) + w * (s_phi * s_psi + c_phi * s_theta * c_psi);
+		d_states[10] = u * (c_theta * s_psi) + v * (c_phi * c_psi + s_phi * s_theta * s_psi) + w * (-s_phi * c_psi + c_phi * s_theta * s_psi);
+		d_states[11] = u * (s_theta)+v * (-s_phi * c_theta) + w * (-c_phi * c_theta);
+	}
+	else {	// (u, v, w, e0, e1, e2, e3, Xe, Ye, Ze) dot
+		d_states[0] = r * v - q * w + Forces[0] / mass;
+		d_states[1] = p * w - r * u + Forces[1] / mass;
+		d_states[2] = q * u - p * v + Forces[2] / mass;
+		d_states[6] = 0.5 * (-p * e1 - q * e2 - r * e3);
+		d_states[7] = 0.5 * (p * e0 + r * e2 - q * e3);
+		d_states[8] = 0.5 * (q * e0 - r * e1 + p * e3);
+		d_states[9] = 0.5 * (r * e0 + q * e1 - p * e2);
+		d_states[10] = u * (e1 * e1 + e0 * e0 - e2 * e2 - e3 * e3) + 2 * v * (e1 * e2 - e3 * e0) + 2 * w * (e1 * e3 + e2 * e0);
+		d_states[11] = 2 * u * (e1 * e2 + e3 * e0) + v * (e2 * e2 + e0 * e0 - e1 * e1 - e3 * e3) + 2 * w * (e2 * e3 - e1 * e0);
+		d_states[12] = -(-2 * u * (e1 * e3 - e2 * e0) - 2 * v * (e2 * e3 + e1 * e0) - w * (e3 * e3 + e0 * e0 - e1 * e1 - e2 * e2));
+	}
 
 	return d_states;
 }
@@ -246,7 +286,7 @@ std::vector<double> Aircraft::get_controls() const {
 	return controls;
 }
 
-void Aircraft::euler2quat(double yaw, double pitch, double roll) // yaw (Z), pitch (Y), roll (X)
+std::vector<double> Aircraft::euler2quat(double yaw, double pitch, double roll) // yaw (Z), pitch (Y), roll (X)
 {
 	// Abbreviations for the various angular functions
 	double cy = cos(yaw * 0.5);
@@ -256,20 +296,25 @@ void Aircraft::euler2quat(double yaw, double pitch, double roll) // yaw (Z), pit
 	double cr = cos(roll * 0.5);
 	double sr = sin(roll * 0.5);
 	
-	states[6] = cr * cp * cy + sr * sp * sy;
-	states[7] = sr * cp * cy - cr * sp * sy;
-	states[8] = cr * sp * cy + sr * cp * sy;
-	states[9] = cr * cp * sy - sr * sp * cy;
+	std::vector<double> quat{ 0.0, 0.0, 0.0, 0.0 };
+
+	quat[0] = cr * cp * cy + sr * sp * sy;
+	quat[1] = sr * cp * cy - cr * sp * sy;
+	quat[2] = cr * sp * cy + sr * cp * sy;
+	quat[3] = cr * cp * sy - sr * sp * cy;
+	return quat;
 }
 
-std::vector<double> Aircraft::trim(const double& velocity, const double& flight_path_angle, const double& altitude, const double& orbit_radius) {
+void Aircraft::trim(const double& velocity, const double& flight_path_angle, const double& altitude, const double& orbit_radius) {
 
 	// initial states
 	trim_gamma = flight_path_angle;
 	trim_velocity = velocity;
 	trim_altitude = altitude;
 	trim_radius = orbit_radius;
-	euler2quat(0.0, trim_gamma, 0.0); // yaw, pitch, roll
+	std::vector<double> quat = euler2quat(0.0, trim_gamma, 0.0); // yaw, pitch, roll
+	states[6] = quat[0]; states[7] = quat[2]; states[8] = quat[3]; states[9] = quat[3];
+
 
 	std::vector<double> Z; // 13 states and 4 controls
 	for (int i = 0; i < 13; i++) { Z.push_back(states[i]); }
@@ -279,7 +324,7 @@ std::vector<double> Aircraft::trim(const double& velocity, const double& flight_
 	double temp_va, temp_h;
 
 	int iter = 0;
-	const int max_try = 10; // 10;
+	const int max_try = 5; // 10;
 	while (true) {
 		if (iter >= max_try) break;
 		if (trim_cost_func(Z) <= 1e-10) break;
@@ -301,7 +346,11 @@ std::vector<double> Aircraft::trim(const double& velocity, const double& flight_
 	norm_quaternion();
 	quat2euler();
 	set_control_inputs(Zstar[13], Zstar[14], Zstar[15], Zstar[16]);
-	return Zstar;
+	
+	// update velocities
+	velocities[0] = sqrt(states[0] * states[0] + states[1] * states[1] + states[2] * states[2]);// m / sec
+	states[0] ? (velocities[1] = atan2(states[2], states[0])) : (velocities[1] = sign(states[0]) * PI / 2.0);// rad
+	velocities[0] ? (velocities[2] = asin(states[1] / velocities[0])) : (velocities[2] = sign(velocities[0]) * PI / 2.0);// rad
 }
 
 double Aircraft::trim_cost_func(std::vector<double> Z) {
@@ -349,3 +398,157 @@ double Aircraft::trim_cost_func(std::vector<double> Z) {
 
 	return cost;
 }
+
+std::vector<double> Aircraft::to_newstates(const std::vector<double>& old_states) {
+	// convert states with (u,v,w and quat, Z) t0 (V,alpha,beta, and euler angles, h)
+
+	std::vector<double> new_states = old_states;
+	new_states[0] = velocities[0];
+	new_states[1] = velocities[1];
+	new_states[2] = velocities[2];
+	new_states[6] = euler_angles[0];
+	new_states[7] = euler_angles[1];
+	new_states[8] = euler_angles[2];
+	new_states[9] = old_states[10];
+	new_states[10] = old_states[11];
+	new_states[11] = -old_states[12];
+	new_states.pop_back();
+	return new_states;
+}
+
+void Aircraft::linearize(const double& velocity, const double& flight_path_angle, const double& altitude, const double& orbit_radius) {
+	
+	trim(velocity, flight_path_angle, altitude, orbit_radius);
+
+	// trimmed states(with quat and (u,v,w)) and controls
+	const std::vector<double> xq0 = get_states(), u0 = get_controls();
+
+	// run linearization
+	linearize(xq0, u0);
+}
+
+void Aircraft::linearize(const std::vector<double>& trimmed_states, const std::vector<double>& trimmed_inputs) {
+
+		// update velocities
+	velocities[0] = sqrt(trimmed_states[0] * trimmed_states[0] + trimmed_states[1] * trimmed_states[1] + trimmed_states[2] * trimmed_states[2]);// m / sec
+	trimmed_states[0] ? (velocities[1] = atan2(trimmed_states[2], trimmed_states[0])) : (velocities[1] = sign(trimmed_states[0]) * PI / 2.0);// rad
+	velocities[0] ? (velocities[2] = asin(trimmed_states[1] / velocities[0])) : (velocities[2] = sign(velocities[0]) * PI / 2.0);// rad
+
+	const std::vector<double> xe0 = to_newstates(trimmed_states);
+
+	// 12 states (with euler angles) and 4 controls
+	const double n = 12, m = 4;
+	const double delta = 1e-5;
+
+	std::vector<double> dxe{ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+	std::vector<double> du = { 0.0, 0.0, 0.0, 0.0 };
+
+	std::vector<std::vector<double>> A{ dxe, dxe, dxe,dxe, dxe, dxe, dxe, dxe, dxe, dxe, dxe, dxe};
+	std::vector<std::vector<double>> B{ du, du, du, du, du, du, du, du, du, du, du, du };
+
+	std::vector<double> f1{ dxe }, f2{ dxe };
+
+	// fill A matrix
+	for (int i = 0; i < n; i++) {
+		dxe = xe0;
+		dxe[i] = xe0[i] + delta;
+		f1 = calculate_derivatives(dxe, trimmed_inputs, true);
+		//f1 = calculate_new_derivatives(dxe, u0);
+		dxe[i] = xe0[i] - delta;
+		f2 = calculate_derivatives(dxe, trimmed_inputs, true);
+
+		for (int j = 0; j < n; j++) {
+			A[j][i] = 0.5 * (f1[j] - f2[j]) / delta;
+		}
+	}
+
+	for (int i = 0; i < m; i++) {
+		du = trimmed_inputs;
+		du[i] = trimmed_inputs[i] + delta;
+		f1 = calculate_derivatives(xe0, du, true);
+		du[i] = trimmed_inputs[i] - delta;
+		f2 = calculate_derivatives(xe0, du, true);
+
+		for (int j = 0; j < n; j++) {
+			B[j][i] = 0.5 * (f1[j] - f2[j])/delta;
+		}
+	}
+
+	// write Linearized Longitudinal Model to matlab file
+	std::ofstream matlab_lon_stream;
+	std::cout << "Writing State-Space model to 'UAV_ss_model.m' file.\n";
+	matlab_lon_stream.open("MATLAB\\UAV_ss_model.m", std::ios_base::out | std::ios_base::trunc);
+	matlab_lon_stream << "% UAV Longutdinal State Space Model -- Generated From FlightSimulator Project" << std::endl;
+	matlab_lon_stream << "% Linearization is perfrormed for steady state flight with \n% velocity of " << trim_velocity
+		<< " m/sec, flight angle of " << trim_gamma << " rad, altitude of " << trim_altitude << " m and orbit radius of "
+		<< trim_radius << " m." << std::endl;
+
+	matlab_lon_stream << "\n%% trimmed states and control inputs : \n"
+		<< "% states = [V, alpha, beta, p, q, r, phi, theta, psi, Xe, Ye, h]\n"
+		<< "x_trim = [" << xe0[0] << ", " << xe0[1] << ", " << xe0[2] << ", "
+		<< xe0[3] << ", " << xe0[4] << ", " << xe0[5] << ", "
+		<< xe0[6] << ", " << xe0[7] << ", " << xe0[8] << ", "
+		<< xe0[9] << ", " << xe0[10] << ", " << xe0[11] << "]';\n"
+		<< "% controls = [throttle, elevator, aileron, rudder]\n"
+		<< "u_trim = [" << trimmed_inputs[0] << ", " << trimmed_inputs[1] << ", "
+		<< trimmed_inputs[2] << ", " << trimmed_inputs[3] << "]';\n" << std::endl;
+
+	matlab_lon_stream << "%% Longitudinal Linear Dynamics" << std::endl;
+	matlab_lon_stream << "A_lon = [\n"
+		<< A[0][0] << "\t" << A[0][1] << "\t" << A[0][4] << "\t" << A[0][7] << "\t" << A[0][11] << ";" << "\n"
+		<< A[1][0] << "\t" << A[1][1] << "\t" << A[1][4] << "\t" << A[1][7] << "\t" << A[1][11] << ";" << "\n"
+		<< A[4][0] << "\t" << A[4][1] << "\t" << A[4][4] << "\t" << A[4][7] << "\t" << A[4][11] << ";" << "\n"
+		<< A[7][0] << "\t" << A[7][1] << "\t" << A[7][4] << "\t" << A[7][7] << "\t" << A[7][11] << ";" << "\n"
+		<< A[11][0] << "\t" << A[11][1] << "\t" << A[11][4] << "\t" << A[11][7] << "\t" << A[11][11] << ";" << "\n"
+		<< "];" << std::endl;
+
+	matlab_lon_stream << "B_lon = [\n"
+		<< B[0][0] << "\t" << B[0][1] << ";\n"
+		<< B[1][0] << "\t" << B[1][1] << ";\n"
+		<< B[4][0] << "\t" << B[4][1] << ";\n"
+		<< B[7][0] << "\t" << B[7][1] << ";\n"
+		<< B[11][0] << "\t" << B[11][1] << ";\n"
+		<< "];" << std::endl;
+
+	matlab_lon_stream << "C_lon = eye(5);" << std::endl;
+	matlab_lon_stream << "D_lon = 0;" << std::endl;
+
+	matlab_lon_stream << "\nuav_lon = ss(A_lon, B_lon, C_lon, D_lon,...\n"
+		<< "'StateName', { 'V','alpha','q','theta','h' }, ...\n"
+		<< "'InputName', { 'throttle','elevator' }, ...\n"
+		<< "'OutputName', { 'V','alpha','q','theta','h' });"
+		<< std::endl;
+	matlab_lon_stream << "disp('eig(A_lon) = '); disp(eig(A_lon))\n" << std::endl;
+
+	matlab_lon_stream << "%% Lateral-Directional Linear Dynamics" << std::endl;
+	matlab_lon_stream << "A_lat = [\n"
+		<< A[2][2] << "\t" << A[2][3] << "\t" << A[2][5] << "\t" << A[2][6] << "\t" << A[2][8] << ";" << "\n"
+		<< A[3][2] << "\t" << A[3][3] << "\t" << A[3][5] << "\t" << A[3][6] << "\t" << A[3][8] << ";" << "\n"
+		<< A[5][2] << "\t" << A[5][3] << "\t" << A[5][5] << "\t" << A[5][6] << "\t" << A[5][8] << ";" << "\n"
+		<< A[6][2] << "\t" << A[6][3] << "\t" << A[6][5] << "\t" << A[6][6] << "\t" << A[6][8] << ";" << "\n"
+		<< A[8][2] << "\t" << A[8][3] << "\t" << A[8][5] << "\t" << A[8][6] << "\t" << A[8][8] << ";" << "\n"
+		<< "];" << std::endl;
+
+	matlab_lon_stream << "B_lat = [\n"
+		<< B[2][2] << "\t" << B[2][3] << ";\n"
+		<< B[3][2] << "\t" << B[3][3] << ";\n"
+		<< B[5][2] << "\t" << B[5][3] << ";\n"
+		<< B[6][2] << "\t" << B[6][3] << ";\n"
+		<< B[8][2] << "\t" << B[8][3] << ";\n"
+		<< "];" << std::endl;
+
+	matlab_lon_stream << "C_lat = eye(5);" << std::endl;
+	matlab_lon_stream << "D_lat = 0;" << std::endl;
+
+	matlab_lon_stream << "\nuav_lat = ss(A_lat, B_lat, C_lat, D_lat,...\n"
+		<< "'StateName', { 'beta','p','r','phi','psi' }, ...\n"
+		<< "'InputName', { 'aileron','rudder' }, ...\n"
+		<< "'OutputName', { 'beta','p','r','phi','psi' });"
+		<< std::endl;
+	matlab_lon_stream << "disp('eig(A_lat) = '); disp(eig(A_lat))\n" << std::endl;
+
+
+	matlab_lon_stream.close();
+	std::cout << "done writing 'UAV_longitudinal_ss_model.m' file.\n";
+}
+
